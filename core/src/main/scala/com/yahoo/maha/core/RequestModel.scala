@@ -2,6 +2,8 @@
 // Licensed under the terms of the Apache License 2.0. Please see LICENSE file in project root for terms.
 package com.yahoo.maha.core
 
+import java.util.Comparator
+
 import com.yahoo.maha.core.bucketing.{BucketParams, BucketSelected, BucketSelector}
 import com.yahoo.maha.core.dimension.PublicDimension
 import com.yahoo.maha.core.fact.{BestCandidates, PublicFactCol}
@@ -11,6 +13,7 @@ import com.yahoo.maha.core.request._
 import com.yahoo.maha.core.error._
 import com.yahoo.maha.utils.DaysUtils
 import grizzled.slf4j.Logging
+import org.mapdb.Atomic
 
 import scala.collection.{SortedSet, mutable}
 import scala.util.{Failure, Success, Try}
@@ -387,9 +390,12 @@ object RequestModel extends Logging {
 
           //keep map from alias to filter for final map back to Set[Filter]
           val filterMap = new mutable.HashMap[String, Filter]()
+          val filterMapWithOperation = new mutable.HashMap[(String, Option[FilterOperation]), Filter]()
           val pushDownFilterMap = new mutable.HashMap[String, PushDownFilter]()
+          val allFilterAliasesWithOperation = new mutable.ListBuffer[(String, Option[FilterOperation])]
           val allFilterAliases = new mutable.TreeSet[String]()
-          val allFactFilters = new mutable.TreeSet[Filter]()
+          val allFactFilters = new mutable.ListBuffer[Filter]()
+          val allNonFactFilterAliasesWithOperation = new mutable.ListBuffer[(String, Option[FilterOperation])]
           val allNonFactFilterAliases = new mutable.TreeSet[String]()
           val allOuterFilters = mutable.TreeSet[Filter]()
           val allOrFilterMeta = mutable.Set[OrFilterMeta]()
@@ -407,7 +413,8 @@ object RequestModel extends Logging {
               allOrFilterMeta += OrFilterMeta(orFilter, orFilterMap.head._1)
             }
             else {
-              allFilterAliases+=filter.field
+              allFilterAliases += filter.field
+              allFilterAliasesWithOperation += Tuple2(filter.field, Option(filter.operator))
               if(publicFact.aliasToReverseStaticMapping.contains(filter.field)) {
                 val reverseMapping = publicFact.aliasToReverseStaticMapping(filter.field)
                 val reverseMappedFilter: Filter = filter match {
@@ -438,8 +445,10 @@ object RequestModel extends Logging {
                   case f =>
                     throw new IllegalArgumentException(s"Unsupported filter operation on statically mapped field : $f")
                 }
+                filterMapWithOperation.put((filter.field, Option(filter.operator)), reverseMappedFilter)
                 filterMap.put(filter.field, reverseMappedFilter)
               } else {
+                filterMapWithOperation.put((filter.field, Option(filter.operator)), filter)
                 filterMap.put(filter.field, filter)
               }
             }
@@ -455,6 +464,8 @@ object RequestModel extends Logging {
           publicFact.forcedFilters.foreach { filter =>
             if(!allFilterAliases(filter.field)) {
               allFilterAliases += filter.field
+              allFilterAliasesWithOperation += Tuple2(filter.field, Option(filter.operator))
+              filterMapWithOperation.put((filter.field, Option(filter.operator)), filter)
               filterMap.put(filter.field, filter)
             }
           }
@@ -462,15 +473,15 @@ object RequestModel extends Logging {
           //list of fk filters
           val filterPostProcess = new mutable.TreeSet[String]
           // separate into fact filters and all remaining non fact filters, except fact filters which are foreign keys
-          allFilterAliases.foreach { filter =>
-            if(publicFact.columnsByAlias(filter)) {
-              if(publicFact.foreignKeyAliases(filter)) {
+          allFilterAliasesWithOperation.foreach { filter =>
+            if(publicFact.columnsByAlias(filter._1)) {
+              if(publicFact.foreignKeyAliases(filter._1)) {
                 //we want to process these after all non foreign keys have been processed
-                filterPostProcess += filter
+                filterPostProcess += filter._1
               }
-              allFactFilters += filterMap(filter)
+              allFactFilters += filterMapWithOperation(filter)
             } else {
-              allNonFactFilterAliases += filter
+              allNonFactFilterAliases += filter._1
             }
           }
 

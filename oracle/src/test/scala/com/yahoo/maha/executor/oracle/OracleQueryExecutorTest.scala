@@ -95,7 +95,7 @@ class OracleQueryExecutorTest extends FunSuite with Matchers with BeforeAndAfter
         Set(
           PubCol("id", "Ad ID", InEquality)
           , PubCol("title", "Ad Title", InEqualityLike)
-          , PubCol("advertiser_id", "Advertiser ID", InEquality)
+          , PubCol("advertiser_id", "Advertiser ID", InNotInEquality)
           , PubCol("campaign_id", "Campaign ID", InEquality)
           , PubCol("ad_group_id", "Ad Group ID", InEquality)
           , PubCol("Ad Status", "Ad Status", InEquality)
@@ -140,7 +140,7 @@ class OracleQueryExecutorTest extends FunSuite with Matchers with BeforeAndAfter
         Set(
           PubCol("id", "Ad Group ID", InEquality)
           , PubCol("name","Ad Group Name", InEqualityLike)
-          , PubCol("advertiser_id", "Advertiser ID", InEquality)
+          , PubCol("advertiser_id", "Advertiser ID", InNotInEquality)
           , PubCol("campaign_id", "Campaign ID", InEquality)
           , PubCol("Ad Group Status", "Ad Group Status", InEquality)
           , PubCol("Ad Group Start Date Full", "Ad Group Start Date Full", InEquality)
@@ -175,7 +175,7 @@ class OracleQueryExecutorTest extends FunSuite with Matchers with BeforeAndAfter
       .toPublicDimension("campaign","campaign",
         Set(
           PubCol("id", "Campaign ID", InEquality)
-          , PubCol("advertiser_id", "Advertiser ID", InEquality)
+          , PubCol("advertiser_id", "Advertiser ID", InNotInEquality)
           , PubCol("name", "Campaign Name", InEquality)
           , PubCol("Campaign Status", "Campaign Status", InNotInEquality)
         ), highCardinalityFilters = Set(NotInFilter("Campaign Status", List("DELETED"), isForceFilter = true), InFilter("Campaign Status", List("ON"), isForceFilter = true), EqualityFilter("Campaign Status", "ON", isForceFilter = true))
@@ -203,7 +203,7 @@ class OracleQueryExecutorTest extends FunSuite with Matchers with BeforeAndAfter
     builder
       .toPublicDimension("advertiser","advertiser",
         Set(
-          PubCol("id", "Advertiser ID", InEquality)
+          PubCol("id", "Advertiser ID", InNotInEquality)
           , PubCol("name", "Advertiser Name", Equality)
           , PubCol("Advertiser Status", "Advertiser Status", InEquality)
         ), highCardinalityFilters = Set(NotInFilter("Advertiser Status", List("DELETED"), isForceFilter = true), InFilter("Advertiser Status", List("ON"), isForceFilter = true), EqualityFilter("Advertiser Status", "ON", isForceFilter = true))
@@ -246,7 +246,7 @@ class OracleQueryExecutorTest extends FunSuite with Matchers with BeforeAndAfter
           PubCol("Year", "Year", InEquality),
           PubCol("ad_group_id", "Ad Group ID", InEquality),
           PubCol("campaign_id", "Campaign ID", InEquality),
-          PubCol("advertiser_id", "Advertiser ID", InEquality),
+          PubCol("advertiser_id", "Advertiser ID", InNotInEquality),
           PubCol("stats_source", "Source", Equality),
           PubCol("price_type", "Pricing Type", In)
         ),
@@ -295,7 +295,7 @@ class OracleQueryExecutorTest extends FunSuite with Matchers with BeforeAndAfter
           PubCol("stats_date", "Day", InBetweenEquality),
           PubCol("ad_group_id", "Ad Group ID", InEquality),
           PubCol("campaign_id", "Campaign ID", InEquality),
-          PubCol("advertiser_id", "Advertiser ID", InEquality),
+          PubCol("advertiser_id", "Advertiser ID", InNotInEquality),
           PubCol("stats_source", "Source", Equality),
           PubCol("price_type", "Pricing Type", In)
         ),
@@ -542,6 +542,8 @@ class OracleQueryExecutorTest extends FunSuite with Matchers with BeforeAndAfter
                           ],
                           "filterExpressions": [
                             {"field": "Day", "operator": "between", "from": "$fromDate", "to": "$toDate"},
+                            {"field": "Advertiser ID", "operator": "in", "values": [1,2]},
+                            {"field": "Advertiser ID", "operator": "not in", "values": [3,4]},
                             {"field": "Advertiser ID", "operator": "=", "value": "1"},
                             {"field": "Pricing Type", "operator": "in", "values": ["CPC","CPA"] }
                           ],
