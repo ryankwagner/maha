@@ -48,6 +48,10 @@ trait BaseFactTest extends FunSuite with Matchers {
     factDWithDruid()
   }
 
+  def factp : FactBuilder = {
+    factPWithPresto()
+  }
+
   //create a new fact builder for each call
   def fact1WithForceFilters(forceFilters: Set[ForceFilter]) : FactBuilder = {
     ColumnContext.withColumnContext { implicit cc: ColumnContext =>
@@ -139,6 +143,32 @@ trait BaseFactTest extends FunSuite with Matchers {
           , FactCol("engagement_count", IntType(0, 0))
           , ConstFactCol("constant_count", IntType(), "1")
           , DruidDerFactCol("Video Starts", IntType(), ("{engagement_count}"))
+        )
+        , forceFilters = forceFilters
+      )
+    }
+  }
+
+  def factPWithPresto(forceFilters: Set[ForceFilter] = Set.empty) : FactBuilder = {
+    ColumnContext.withColumnContext { implicit cc: ColumnContext =>
+      Fact.newFact(
+        "factp", DailyGrain, PrestoEngine, Set(AdvertiserSchema),
+        Set(
+          DimCol("account_id", IntType(), annotations = Set(ForeignKey("cache_advertiser_metadata")))
+          , DimCol("campaign_id", IntType(), annotations = Set(ForeignKey("cache_campaign_metadata")))
+          , DimCol("ad_group_id", IntType(), annotations = Set(ForeignKey("cache_campaign_metadata")))
+          , DimCol("ad_id", IntType(), annotations = Set(ForeignKey("advertiser")))
+          , DimCol("stats_source", IntType(3))
+          , DimCol("price_type", IntType(3))
+          , DimCol("landing_page_url", StrType(), annotations = Set(EscapingRequired))
+          , DimCol("engagement_type", IntType(3))
+        ),
+        Set(
+          FactCol("impressions", IntType())
+          , FactCol("clicks", IntType())
+          , FactCol("engagement_count", IntType(0, 0))
+          , ConstFactCol("constant_count", IntType(), "1")
+          , PrestoDerFactCol("Video Starts", IntType(), ("{engagement_count}"))
         )
         , forceFilters = forceFilters
       )
@@ -283,6 +313,7 @@ trait BaseFactTest extends FunSuite with Matchers {
             DimCol("advertiser_id", IntType(), annotations = Set(ForeignKey("advertiser")))
             , DimCol("campaign_id", IntType(), annotations = Set(ForeignKey("campaign")))
             , DimCol("stats_date", DateType("YYYY-MM-DD"))
+            , ConstDimCol("const_dim", IntType(), "1")
             , OracleDerDimCol("Month", DateType(), GET_INTERVAL_DATE("{stats_date}", "M"))
             , OracleDerDimCol("Week", DateType(), GET_INTERVAL_DATE("{stats_date}", "w"))
           ),
@@ -290,6 +321,7 @@ trait BaseFactTest extends FunSuite with Matchers {
             FactCol("impressions", IntType(3, 1))
             , FactCol("clicks", IntType(3, 0, 1, 800))
             , FactCol("spend", DecType(0, "0.0"))
+            , ConstFactCol("const_fact", IntType(), "1")
           )
         )
     }
@@ -305,6 +337,7 @@ trait BaseFactTest extends FunSuite with Matchers {
               DimCol("advertiser_id", IntType(), annotations = Set(ForeignKey("advertiser")))
               , DimCol("campaign_id", IntType(), annotations = Set(ForeignKey("campaign")))
               , DimCol("stats_date", DateType("YYYY-MM-DD"))
+              , ConstDimCol("const_dim", IntType(), "1")
               , OracleDerDimCol("Month", DateType(), GET_INTERVAL_DATE("{stats_date}", "M"))
               , OracleDerDimCol("Week", DateType(), GET_INTERVAL_DATE("{stats_date}", "w"))
             ),
@@ -312,6 +345,7 @@ trait BaseFactTest extends FunSuite with Matchers {
               FactCol("impressions", IntType(3, 1))
               , FactCol("clicks", IntType(3, 0, 1, 800))
               , FactCol("spend", DecType(0, "0.0"))
+              , ConstFactCol("const_fact", IntType(), "1")
             )
           )
       }
@@ -335,6 +369,7 @@ trait BaseFactTest extends FunSuite with Matchers {
             DimCol("advertiser_id", IntType(), annotations = Set(ForeignKey("advertiser")))
             , DimCol("stats_date", DateType("YYYY-MM-DD"))
             , DimCol("campaign_id", IntType(), annotations = Set(ForeignKey("campaign")))
+            , ConstDimCol("const_dim", IntType(), "1")
             , OracleDerDimCol("Month", DateType(), GET_INTERVAL_DATE("{stats_date}", "M"))
             , OracleDerDimCol("Week", DateType(), GET_INTERVAL_DATE("{stats_date}", "w"))
           ),
@@ -342,6 +377,7 @@ trait BaseFactTest extends FunSuite with Matchers {
             FactCol("impressions", IntType(3, 1))
             , FactCol("clicks", IntType(3, 0, 1, 800))
             , FactCol("spend", DecType(0, "0.0"))
+            , ConstFactCol("const_fact", IntType(), "1")
           )
         )
     }
