@@ -183,6 +183,8 @@ trait QueryGenerator[T <: EngineRequirement] {
 
 trait BaseQueryGenerator[T <: EngineRequirement] extends QueryGenerator[T] {
 
+
+
   def removeDuplicateIfForced(localFilters: Seq[Filter], forcedFilters: Seq[ForcedFilter], inputContext: FactualQueryContext): Array[Filter] = {
     val queryContext = inputContext
 
@@ -190,10 +192,14 @@ trait BaseQueryGenerator[T <: EngineRequirement] extends QueryGenerator[T] {
     val returnedFilters = new mutable.LinkedHashMap[String, Filter]
     localFilters.foreach {
       filter =>
-        val name = queryContext.factBestCandidate.publicFact.aliasToNameColumnMap(filter.field)
-        val column = fact.columnsByNameMap(name)
-        val real_name = column.alias.getOrElse(name)
-        returnedFilters(real_name) = filter
+        if(filter.field != "or") {
+          val name = queryContext.factBestCandidate.publicFact.aliasToNameColumnMap(filter.field)
+          val column = fact.columnsByNameMap(name)
+          val real_name = column.alias.getOrElse(name)
+          returnedFilters(real_name) = filter
+        } else {
+          returnedFilters(filter.field) = filter
+        }
     }
     forcedFilters.foreach {
       filter =>
@@ -262,6 +268,38 @@ object QueryGeneratorHelper {
     }
   }
 
+  /**
+    * Handle filter name extraction & column function based on filter type:
+    * multi field forced, combining (or, and), or single-field.
+    */
+  def handleFilterTypeNameExpressionExtraction(filter: Filter
+                                              , colFn: Column => String
+                                              , fact: Fact
+                                              , publicFact: PublicFact): Map[String, (String, String)] = {
+    val filterFields: mutable.ListBuffer[String]  = new mutable.ListBuffer[String]()
+    val expressionsMap: mutable.HashMap[String, (String, String)] = new mutable.HashMap[String, (String, String)]()
+    filter match {
+      case filter1: OrFilter => filterFields ++= filter1.filters.map(f => f.field)
+      case filter1: MultiFieldForcedFilter => filterFields ++= List(filter1.field, filter1.compareTo)
+      case _ => filterFields ++= List(filter.field)
+    }
+
+    val filterBaseNames: List[(String, String)] = filterFields.map(f => (f, publicFact.aliasToNameColumnMap(f))).toList
+    if(filterBaseNames.forall(f=> fact.dimColMap.contains(f._2))) Map.empty
+    else if(filterBaseNames.forall(f=> fact.factColMap.contains(f._2)))  {
+      for (f <- filterBaseNames) {
+        val column = fact.columnsByNameMap(f._2)
+        val exp = colFn(column)
+        expressionsMap(f._1) = (f._2, exp)
+      }
+      expressionsMap.toMap
+    } else {
+      throw new IllegalArgumentException(
+        s"Unknown fact column: publicFact=${publicFact.name}, fact=${fact.name} alias=${filter.field}, name=$filterBaseNames")
+    }
+
+  }
+
   def handleFilterRender(filter: Filter,
                          publicFact: PublicFact,
                          fact: Fact,
@@ -270,10 +308,24 @@ object QueryGeneratorHelper {
                          engine: Engine,
                          literalMapper: LiteralMapper,
                          colFn: Column => String): SqlResult = {
-    val fieldNames: mutable.ArrayBuffer[String] = new ArrayBuffer[String]()
+    val inMap: Map[String, (String, String)] = handleFilterTypeNameExpressionExtraction(filter, colFn, fact, publicFact)
+
+    FilterSql.renderFilter(
+      filter,
+      aliasToNameMapFull,
+      inMap,
+      fact.columnsByNameMap,
+      engine,
+      literalMapper
+    )
+
+    /*val fieldNames: mutable.ArrayBuffer[String] = new ArrayBuffer[String]()
     val isMultiField: Boolean = filter.isInstanceOf[MultiFieldForcedFilter]
 
-    fieldNames += publicFact.aliasToNameColumnMap(filter.field)
+    if(!filter.isInstanceOf[CombiningFilter])
+      fieldNames += publicFact.aliasToNameColumnMap(filter.field)
+    else if(filter.isInstanceOf[OrFilter])
+
     if(isMultiField)
       fieldNames += publicFact.aliasToNameColumnMap(filter.asInstanceOf[MultiFieldForcedFilter].compareTo)
 
@@ -320,7 +372,7 @@ object QueryGeneratorHelper {
     } else {
       throw new IllegalArgumentException(
         s"Unknown fact column: publicFact=${publicFact.name}, fact=${fact.name} alias=${filter.field}, name=$baseFieldName")
-    }
+    }*/
   }
 }
 

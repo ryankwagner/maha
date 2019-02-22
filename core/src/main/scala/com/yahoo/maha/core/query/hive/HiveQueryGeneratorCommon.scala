@@ -103,6 +103,63 @@ abstract class HiveQueryGeneratorCommon(partitionColumnRenderer:PartitionColumnR
     }
   }
 
+  private def setWhereAndHavingFilters(filter : Filter, fact : Fact, result : SqlResult, publicFact : PublicFact): (String, String) = {
+    filter match {
+      case asOrFilter: OrFilter =>
+        if (asOrFilter.filters.forall(f => !f.isInstanceOf[OrFilter] && fact.dimColMap.contains(f.field))) (result.filter, null)
+        else if (asOrFilter.filters.forall(f => !f.isInstanceOf[OrFilter] && fact.factColMap.contains(f.field))) (null, result.filter)
+        else throw new IllegalArgumentException(
+          s"Unknown fact column: publicFact=${fact.name}, fact=${fact.name} alias=${filter.field}, name=${filter.asValues}")
+      case _: Filter =>
+        val name = publicFact.aliasToNameColumnMap(filter.field)
+        if (fact.dimColMap.contains(name)) {
+          (result.filter, null)
+        } else if (fact.factColMap.contains(name)) {
+          (null, result.filter)
+        } else {
+          throw new IllegalArgumentException(
+            s"Unknown fact column: publicFact=${publicFact.name}, fact=${fact.name} alias=${filter.field}, name=$name")
+        }
+    }
+  }
+
+  private def renderUniqueFilters(unique_filters: Array[Filter]
+                                  , publicFact: PublicFact
+                                  , fact: Fact
+                                  , renderRollupExpression: (String, RollupExpression, Option[String]) => String
+                                  , queryContext: CombinedQueryContext
+                                  ): (mutable.LinkedHashSet[String], mutable.LinkedHashSet[String]) = {
+    /**
+      * Refactor unique_filters to a function that sets validates where to put the filter dependently.
+      * If the filter is not an OrFilter, do the same work as before.
+      * If it is, check all filter fields nested in the OrFilter are in either dimColMap or factColMap.
+      * From there, map the result back.
+      */
+
+    val whereFilters : mutable.LinkedHashSet[String] = new mutable.LinkedHashSet[String]()
+    val havingFilters : mutable.LinkedHashSet[String] = new mutable.LinkedHashSet[String]()
+    val aliasToNameMapFull = queryContext.factBestCandidate.publicFact.aliasToNameColumnMap
+    unique_filters.sorted map {
+      filter =>
+        val colRenderFn = (x: Column) =>
+          x match {
+            case FactCol(_, dt, cc, rollup, _, annotations, _) =>
+              s"""${renderRollupExpression(x.name, rollup, None)}"""
+            case OracleDerFactCol(_, _, dt, cc, de, annotations, rollup, _) => //This never gets used, otherwise errors would be thrown before the Generator.
+              s"""${renderRollupExpression(de.render(x.name, Map.empty), rollup, None)}"""
+            case any =>
+              throw new UnsupportedOperationException(s"Found non fact column : $any")
+          }
+        val result = QueryGeneratorHelper.handleFilterRender(filter, publicFact, fact, aliasToNameMapFull, queryContext, HiveEngine, hiveLiteralMapper, colRenderFn)
+
+        val filterLeftOrRight : (String, String) = setWhereAndHavingFilters(filter, fact, result, publicFact)
+        if(filterLeftOrRight != null && filterLeftOrRight._1 != null) whereFilters += filterLeftOrRight._1
+        else if(filterLeftOrRight != null && filterLeftOrRight._2 != null) havingFilters += filterLeftOrRight._2
+    }
+
+    (whereFilters, havingFilters)
+  }
+
   /**
     * Fact select
     *
@@ -175,35 +232,14 @@ abstract class HiveQueryGeneratorCommon(partitionColumnRenderer:PartitionColumnR
     val aliasToNameMapFull = queryContext.factBestCandidate.publicFact.aliasToNameColumnMap
     val allFilters = factForcedFilters // ++ factFilters need to append non-forced filters, or otherwise pass them in separately
 
-    val whereFilters = new mutable.LinkedHashSet[String]
-    val havingFilters = new mutable.LinkedHashSet[String]
+    //var whereFilters = new mutable.LinkedHashSet[String]
+    //var havingFilters = new mutable.LinkedHashSet[String]
 
 
     val unique_filters = removeDuplicateIfForced( factFilters.toSeq, allFilters.toSeq, queryContext )
 
-    unique_filters.sorted map {
-      filter =>
-        val name = publicFact.aliasToNameColumnMap(filter.field)
-        val colRenderFn = (x: Column) =>
-          x match {
-            case FactCol(_, dt, cc, rollup, _, annotations, _) =>
-              s"""${renderRollupExpression(x.name, rollup, None)}"""
-            case OracleDerFactCol(_, _, dt, cc, de, annotations, rollup, _) => //This never gets used, otherwise errors would be thrown before the Generator.
-              s"""${renderRollupExpression(de.render(x.name, Map.empty), rollup, None)}"""
-            case any =>
-              throw new UnsupportedOperationException(s"Found non fact column : $any")
-          }
-        val result = QueryGeneratorHelper.handleFilterRender(filter, publicFact, fact, aliasToNameMapFull, queryContext, HiveEngine, hiveLiteralMapper, colRenderFn)
 
-        if (fact.dimColMap.contains(name)) {
-          whereFilters += result.filter
-        } else if (fact.factColMap.contains(name)) {
-          havingFilters += result.filter
-        } else {
-          throw new IllegalArgumentException(
-            s"Unknown fact column: publicFact=${publicFact.name}, fact=${fact.name} alias=${filter.field}, name=$name")
-        }
-    }
+    val (whereFilters, havingFilters):  (mutable.LinkedHashSet[String], mutable.LinkedHashSet[String]) = renderUniqueFilters(unique_filters, publicFact, fact, renderRollupExpression, queryContext)
 
     val dayFilter = FilterSql.renderFilter(
       queryContext.requestModel.localTimeDayFilter,

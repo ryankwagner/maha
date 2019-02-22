@@ -52,12 +52,14 @@ object FilterOperation {
   val InEqualityLikeFieldEquality: Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation, FieldEqualityFilterOperation)
   val InBetweenEqualityFieldEquality: Set[FilterOperation] = Set(InFilterOperation, BetweenFilterOperation, EqualityFilterOperation, LikeFilterOperation, FieldEqualityFilterOperation)
   val InEquality: Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation)
+  val InEqualityOr: Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation, OrFilterOperation)
   val InEqualityNotEquals: Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation, NotEqualToFilterOperation)
   val InNotInEquality: Set[FilterOperation] = Set(InFilterOperation, NotInFilterOperation, EqualityFilterOperation)
   val InEqualityLike : Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation, LikeFilterOperation)
   val InNotInEqualityNotEquals: Set[FilterOperation] = Set(InFilterOperation, NotInFilterOperation, EqualityFilterOperation, NotEqualToFilterOperation)
   val InNotInEqualityLike: Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation, NotInFilterOperation, LikeFilterOperation)
   val InBetweenEquality: Set[FilterOperation] = Set(InFilterOperation, BetweenFilterOperation,EqualityFilterOperation)
+  val InBetweenEqualityOr: Set[FilterOperation] = Set(InFilterOperation, BetweenFilterOperation,EqualityFilterOperation, OrFilterOperation)
   val BetweenEquality: Set[FilterOperation] = Set(BetweenFilterOperation,EqualityFilterOperation)
   val InEqualityIsNotNull: Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation, IsNotNullFilterOperation)
   val InEqualityIsNotNullNotIn: Set[FilterOperation] = Set(InFilterOperation, EqualityFilterOperation, IsNotNullFilterOperation,NotInFilterOperation)
@@ -981,6 +983,13 @@ object FilterDruid {
         throw new UnsupportedOperationException(s"Like filter not supported on Druid fact fields : $f")
       case f @ FieldEqualityFilter(field, compareTo, _, _) =>
         throw new UnsupportedOperationException(s"Column Comparison is not supported on Druid fact fields : $f")
+      case f @ OrFilter(filters) =>
+        //Generate list of filters (must be FACT ONLY) to OR together.
+        new OrHavingSpec(filters.map(filter => renderFilterFact(filter, aliasToNameMapFull, columnsByNameMap)).asJava)
+      case f @ AndFilter(filters) =>
+      //Generate list of filters (must be FACT ONLY) to AND together.
+        new AndHavingSpec(filters.map(filter => renderFilterFact(filter, aliasToNameMapFull, columnsByNameMap)).asJava)
+
       case f =>
         throw new UnsupportedOperationException(s"Unhandled filter operation $f")
     }
@@ -996,6 +1005,13 @@ object FilterSql {
                    engine: Engine,
                    literalMapper: LiteralMapper,
                    grainOption: Option[Grain] = None): SqlResult = {
+    /**
+      * Modify to add expression matching on all input filters.  If one filter is actually a combination of filters, render.
+      * This should come out in aliasToRenderedSqlMap in the form  of:
+      * Getting the name
+      * Rendering the expression
+      */
+
 
     val aliasToRenderedSqlMap: mutable.HashMap[String, (String, String)] = new mutable.HashMap[String, (String, String)]()
     val name = aliasToNameMapFull(filter.field)
@@ -1034,6 +1050,25 @@ object FilterSql {
         }
         aliasToRenderedSqlMap(g) = (otherColumnName, exp2)
         renderFilterWithAlias(filter, aliasToRenderedSqlMap.toMap, column, engine, literalMapper, grainOption = grainOption )
+      case OrFilter(filters) =>
+      /**
+        * OrFilter is a special case where we want to independently render each filter on its own filter map.
+        */
+        var orResultList: mutable.ListBuffer[SqlResult] = new mutable.ListBuffer[SqlResult]
+        for(filterOr <- filters) {
+          orResultList += renderFilter(filterOr, aliasToNameMapFull, nameToAliasAndRenderedSqlMap, columnsByNameMap, engine, literalMapper, grainOption)
+        }
+          var orResultString: List[String] = List.empty
+          var orResultBool: List[Boolean] = List.empty
+          orResultList.foreach(
+            result => {
+              orResultString ++= List(result.filter)
+              orResultBool ++= List(result.escaped)
+            }
+          )
+
+          DefaultResult(orResultString.mkString("(",") OR (",")"), orResultBool.contains(true))
+
       case _ =>
         renderFilterWithAlias(filter, aliasToRenderedSqlMap.toMap, column, engine, literalMapper, grainOption = grainOption )
     }

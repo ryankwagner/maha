@@ -35,7 +35,8 @@ class HiveQueryGeneratorV2(partitionColumnRenderer:PartitionColumnRenderer, udfS
   }
 
   override def validateEngineConstraints(requestModel: RequestModel): Boolean = {
-    requestModel.orFilterMeta.isEmpty
+    //requestModel.orFilterMeta.isEmpty
+    true
   }
 
   private[this] def generateQuery(queryContext: CombinedQueryContext) : Query = {

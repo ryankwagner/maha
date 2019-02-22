@@ -4,7 +4,7 @@ package com.yahoo.maha.core
 
 import com.yahoo.maha.core
 import com.yahoo.maha.core.bucketing.{BucketParams, BucketSelector, CubeBucketSelected}
-import com.yahoo.maha.core.dimension.PublicDimension
+import com.yahoo.maha.core.dimension.{PublicDimColumn, PublicDimension}
 import com.yahoo.maha.core.fact.{BestCandidates, PublicFact, PublicFactCol, PublicFactColumn}
 import com.yahoo.maha.core.registry.{FactRowsCostEstimate, Registry}
 import com.yahoo.maha.core.request.Parameter.Distinct
@@ -308,6 +308,63 @@ object RequestModel extends Logging {
 
   val Logger = LoggerFactory.getLogger(classOf[RequestModel])
 
+  private def reverseFilterMapping(filter: Filter) : Filter = {
+    null
+  }
+
+  private def dimCols(publicFact: PublicFact) : Set[String] = {
+    publicFact.dimCols.map(f => f.alias)
+  }
+
+  private def factCols(publicFact: PublicFact) : Set[String] = {
+    publicFact.factCols.map(f => f.alias)
+  }
+
+  private def subdivideOrFilter(factCols: Set[String], dimCols: Set[String], orFilter: OrFilter) : (OrFilter, OrFilter) = {
+    var orFactFilters : List[Filter] = List.empty
+    var orDimFilters : List[Filter] = List.empty
+    for(filter <- orFilter.filters) {
+      if(factCols.contains(filter.field)) orFactFilters ++= List(filter)
+      else if(dimCols.contains(filter.field)) orDimFilters ++= List(filter)
+    }
+    (OrFilter(orFactFilters), OrFilter(orDimFilters))
+  }
+
+  private def filterAliasAndOperationMap(allFactFilters: mutable.TreeSet[Filter]): Map[String, FilterOperation] = {
+    var aliasToOperationMap: mutable.HashMap[String, FilterOperation] = new mutable.HashMap[String, FilterOperation]()
+    for(filter <- allFactFilters) {
+      if(filter.isInstanceOf[OrFilter]) {
+        aliasToOperationMap ++= filterAliasAndOperationMap(mutable.TreeSet(filter.asInstanceOf[OrFilter].filters:_*))
+      } else {
+        aliasToOperationMap(filter.field) = filter.operator
+      }
+    }
+    aliasToOperationMap.toMap
+  }
+
+  private def orFilterToFilterList(orFilter: OrFilter) : List[Filter] = {
+    var filterList: mutable.ListBuffer[Filter] = new mutable.ListBuffer[Filter]()
+    for(filter <- orFilter.filters) {
+      if(filter.isInstanceOf[OrFilter]) filterList ++= orFilterToFilterList(filter.asInstanceOf[OrFilter])
+      else filterList += filter
+    }
+
+    filterList.toList
+  }
+
+  private def filterSetExplodeCombiningFilters(allFactFilters: mutable.TreeSet[Filter]): mutable.TreeSet[Filter] = {
+    val filterSet: mutable.TreeSet[Filter] = new mutable.TreeSet[Filter]()
+    for(filter <- allFactFilters) {
+      if(filter.isInstanceOf[OrFilter]) {
+        filterSet ++= filterSetExplodeCombiningFilters(mutable.TreeSet(filter.asInstanceOf[OrFilter].filters:_*))
+      } else {
+        filterSet += filter
+      }
+    }
+
+    filterSet
+  }
+
   def from(request: ReportingRequest, registry: Registry, utcTimeProvider: UTCTimeProvider = PassThroughUTCTimeProvider, revision: Option[Int] = None) : Try[RequestModel] = {
     Try {
       registry.getFact(request.cube, revision) match {
@@ -488,54 +545,109 @@ object RequestModel extends Logging {
               val outerFilters = filter.asInstanceOf[OuterFilter].filters.to[mutable.TreeSet]
               outerFilters.foreach( of => require(allRequestedAliases.contains(of.field) == true, s"OuterFilter ${of.field} is not in selected column list"))
               allOuterFilters ++= outerFilters
-            } else if (filter.isInstanceOf[OrFilter]) {
-              val orFilter = filter.asInstanceOf[OrFilter]
-              val orFilterMap : Map[Boolean, Iterable[Filter]] = orFilter.filters.groupBy(f => publicFact.columnsByAliasMap.contains(f.field) && publicFact.columnsByAliasMap(f.field).isInstanceOf[PublicFactCol])
-              require(orFilterMap.size == 1, s"Or filter cannot have combination of fact and dim filters, factFilters=${orFilterMap.get(true)} dimFilters=${orFilterMap.get(false)}")
-              allOrFilterMeta += OrFilterMeta(orFilter, orFilterMap.head._1)
-            }
-            else {
-              allFilterAliases+=filter.field
-              if(publicFact.aliasToReverseStaticMapping.contains(filter.field)) {
-                val reverseMapping = publicFact.aliasToReverseStaticMapping(filter.field)
-                val reverseMappedFilter: Filter = filter match {
-                  case BetweenFilter(field, from, to) =>
-                    require(reverseMapping.contains(from), s"Unknown filter from value for field=$field, from=$from")
-                    require(reverseMapping.contains(to), s"Unknown filter to value for field=$field, to=$to")
-                    val fromSet = reverseMapping(from)
-                    val toSet = reverseMapping(to)
-                    require(fromSet.size == 1 && toSet.size == 1,
-                      s"Cannot perform between filter, the column has static mapping which maps to multiple values, from=$from maps to fromSet=$fromSet, to=$to maps to toSet=$toSet"
-                    )
-                    BetweenFilter(field, fromSet.head, toSet.head)
-                  case EqualityFilter(field, value, _, _) =>
-                    require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
-                    val valueSet = reverseMapping(value)
-                    if(valueSet.size > 1) {
-                      InFilter(field, valueSet.toList)
-                    } else {
-                      EqualityFilter(field, valueSet.head)
-                    }
-                  case InFilter(field, values, _, _) =>
-                    val mapped = values.map {
-                      value =>
+            } else {
+
+              if(filter.isInstanceOf[OrFilter]) {
+                /*Add all filters into the alias map.
+                * Do work on all included filters.
+                **/
+                val orFilter = filter.asInstanceOf[OrFilter]
+                val (orFactFilter, orDimFilter) = subdivideOrFilter(factCols(publicFact), dimCols(publicFact),  orFilter)
+
+                allFactFilters ++= List(orFactFilter, orDimFilter)
+                orFilter.filters.foreach(filter => {
+
+                  if (publicFact.aliasToReverseStaticMapping.contains(filter.field)) {
+                    val reverseMapping = publicFact.aliasToReverseStaticMapping(filter.field)
+                    val reverseMappedFilter: Filter = filter match {
+                      case BetweenFilter(field, from, to) =>
+                        require(reverseMapping.contains(from), s"Unknown filter from value for field=$field, from=$from")
+                        require(reverseMapping.contains(to), s"Unknown filter to value for field=$field, to=$to")
+                        val fromSet = reverseMapping(from)
+                        val toSet = reverseMapping(to)
+                        require(fromSet.size == 1 && toSet.size == 1,
+                          s"Cannot perform between filter, the column has static mapping which maps to multiple values, from=$from maps to fromSet=$fromSet, to=$to maps to toSet=$toSet"
+                        )
+                        BetweenFilter(field, fromSet.head, toSet.head)
+                      case EqualityFilter(field, value, _, _) =>
                         require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
-                        reverseMapping(value)
+                        val valueSet = reverseMapping(value)
+                        if (valueSet.size > 1) {
+                          InFilter(field, valueSet.toList)
+                        } else {
+                          EqualityFilter(field, valueSet.head)
+                        }
+                      case InFilter(field, values, _, _) =>
+                        val mapped = values.map {
+                          value =>
+                            require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
+                            reverseMapping(value)
+                        }
+                        InFilter(field, mapped.flatten)
+                      case NotInFilter(field, values, _, _) =>
+                        val mapped = values.map {
+                          value =>
+                            require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
+                            reverseMapping(value)
+                        }
+                        NotInFilter(field, mapped.flatten)
+                      case f =>
+                        throw new IllegalArgumentException(s"Unsupported filter operation on statically mapped field : $f")
                     }
-                    InFilter(field, mapped.flatten)
-                  case NotInFilter(field, values, _, _) =>
-                    val mapped = values.map {
-                      value =>
-                        require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
-                        reverseMapping(value)
-                    }
-                    NotInFilter(field, mapped.flatten)
-                  case f =>
-                    throw new IllegalArgumentException(s"Unsupported filter operation on statically mapped field : $f")
-                }
-                filterMap.put(filter.field, reverseMappedFilter)
+                    filterMap.put(filter.field, reverseMappedFilter)
+                  } else {
+                    filterMap.put(filter.field, orFilter)
+                  }
+                })
+
               } else {
-                filterMap.put(filter.field, filter)
+                /*
+                * Works as normal.  Filter gets constructed as normal.
+                 */
+
+
+                allFilterAliases += filter.field
+                if (publicFact.aliasToReverseStaticMapping.contains(filter.field)) {
+                  val reverseMapping = publicFact.aliasToReverseStaticMapping(filter.field)
+                  val reverseMappedFilter: Filter = filter match {
+                    case BetweenFilter(field, from, to) =>
+                      require(reverseMapping.contains(from), s"Unknown filter from value for field=$field, from=$from")
+                      require(reverseMapping.contains(to), s"Unknown filter to value for field=$field, to=$to")
+                      val fromSet = reverseMapping(from)
+                      val toSet = reverseMapping(to)
+                      require(fromSet.size == 1 && toSet.size == 1,
+                        s"Cannot perform between filter, the column has static mapping which maps to multiple values, from=$from maps to fromSet=$fromSet, to=$to maps to toSet=$toSet"
+                      )
+                      BetweenFilter(field, fromSet.head, toSet.head)
+                    case EqualityFilter(field, value, _, _) =>
+                      require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
+                      val valueSet = reverseMapping(value)
+                      if (valueSet.size > 1) {
+                        InFilter(field, valueSet.toList)
+                      } else {
+                        EqualityFilter(field, valueSet.head)
+                      }
+                    case InFilter(field, values, _, _) =>
+                      val mapped = values.map {
+                        value =>
+                          require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
+                          reverseMapping(value)
+                      }
+                      InFilter(field, mapped.flatten)
+                    case NotInFilter(field, values, _, _) =>
+                      val mapped = values.map {
+                        value =>
+                          require(reverseMapping.contains(value), s"Unknown filter value for field=$field, value=$value")
+                          reverseMapping(value)
+                      }
+                      NotInFilter(field, mapped.flatten)
+                    case f =>
+                      throw new IllegalArgumentException(s"Unsupported filter operation on statically mapped field : $f")
+                  }
+                  filterMap.put(filter.field, reverseMappedFilter)
+                } else {
+                  filterMap.put(filter.field, filter)
+                }
               }
             }
           }
@@ -623,7 +735,10 @@ object RequestModel extends Logging {
 
           val bestCandidatesOption: Option[BestCandidates] = if(allRequestedFactAliases.nonEmpty || allFactFilters.nonEmpty) {
             for {
-              bestCandidates <- publicFact.getCandidatesFor(request.schema, request.requestType, allRequestedFactAliases.toSet, allRequestedFactJoinAliases.toSet, allFactFilters.map(f => f.field -> f.operator).toMap, requestedDaysWindow, requestedDaysLookBack, localTimeDayFilter)
+              bestCandidates <- publicFact.getCandidatesFor(request.schema, request.requestType, allRequestedFactAliases.toSet, allRequestedFactJoinAliases.toSet,
+                //allFactFilters.map(f => f.field -> f.operator).toMap
+                filterAliasAndOperationMap(allFactFilters)
+                , requestedDaysWindow, requestedDaysLookBack, localTimeDayFilter)
             } yield bestCandidates
           } else None
 
@@ -706,8 +821,10 @@ object RequestModel extends Logging {
             primaryCheck || secondaryCheck
           }
 
+          val combiningAllFactFilters = filterSetExplodeCombiningFilters(allFactFilters)
+
           //validate filter operation on fact filter field
-          allFactFilters.foreach {
+          combiningAllFactFilters.foreach {
             filter =>
               val pubCol = publicFact.columnsByAliasMap(filter.field)
               require(pubCol.filters.contains(filter.operator),
