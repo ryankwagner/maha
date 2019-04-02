@@ -218,14 +218,14 @@ sealed trait CombiningFilter {
   def isEmpty : Boolean
 }
 
-case class OrFilter(filters: List[Filter]) extends ForcedFilter with CombiningFilter {
+case class OrFilter(filters: Set[Filter]) extends ForcedFilter with CombiningFilter {
   override def operator: FilterOperation = OrFilterOperation
   override def field: String = "or"
   override def isEmpty : Boolean = filters.isEmpty
   val asValues: String = filters.map(_.asValues).mkString("(",") OR (",")")
 }
 
-case class AndFilter(filters: List[Filter]) extends ForcedFilter with CombiningFilter {
+case class AndFilter(filters: Set[Filter]) extends ForcedFilter with CombiningFilter {
   override def operator: FilterOperation = AndFilterOperation
   override def field: String = "and"
   override def isEmpty : Boolean = filters.isEmpty

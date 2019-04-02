@@ -26,9 +26,18 @@ class QueryBuilder(val initSize: Int, val orderBySize: Int) {
    */
   private[this] var whereClause: String = ""
   /**
+    * V2 WHERE Clause
+    */
+  private[this] var v2WhereClause: String = ""
+  /**
    * HAVING clause
    */
   private[this] var havingClause: String = ""
+  /**
+    * V2 HAVING Clause
+    */
+  private[this] var v2HavingClause: String = ""
+
   /**
    * outer WHERE clause
    */
@@ -147,6 +156,14 @@ class QueryBuilder(val initSize: Int, val orderBySize: Int) {
     this.whereClause = whereClause
   }
 
+  def getV2WhereClause: String = {
+    v2WhereClause
+  }
+
+  def setV2WhereClause(whereClause: String): Unit = {
+    this.v2WhereClause = whereClause
+  }
+
   def getOuterWhereClause: String = {
     outerWhereClause
   }
@@ -177,6 +194,14 @@ class QueryBuilder(val initSize: Int, val orderBySize: Int) {
 
   def setHavingClause(havingClause: String) {
     this.havingClause = havingClause
+  }
+
+  def getV2HavingClause: String = {
+    v2HavingClause
+  }
+
+  def setV2HavingClause(havingClause: String): Unit = {
+    this.v2HavingClause = havingClause
   }
 
   def addPartitionPredicate(predicate: String) {
