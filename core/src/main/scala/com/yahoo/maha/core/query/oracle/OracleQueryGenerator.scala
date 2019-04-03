@@ -1035,17 +1035,15 @@ b. Dim Driven
       }
     }
 
-    def generateUniqueWhereEscapedAndHavingFilters(regularFilters: SortedSet[Filter]
+    def generateUniqueWhereAndHavingFilters(regularFilters: SortedSet[Filter]
                                                   , forceFilters: Set[ForcedFilter]
                                                   , queryContext: CombinedQueryContext
                                                   , requestModel: RequestModel
                                                   , publicFact: PublicFact
                                                   , fact: Fact
                                                   , whereFilters: mutable.LinkedHashSet[String]
-                                                  , havingFilters: mutable.LinkedHashSet[String]
-                                                  , escaped: Boolean)
-    : (mutable.LinkedHashSet[String], mutable.LinkedHashSet[String], Boolean) = {
-      var returnEscaped = escaped
+                                                  , havingFilters: mutable.LinkedHashSet[String])
+    : (mutable.LinkedHashSet[String], mutable.LinkedHashSet[String]) = {
       if (requestModel.isFactDriven || requestModel.dimensionsCandidates.isEmpty || requestModel.hasNonFKFactFilters || requestModel.hasFactSortBy || fact.forceFilters.nonEmpty) {
         val unique_filters = removeDuplicateIfForced( regularFilters.toSeq, forceFilters.toSeq, queryContext )
         unique_filters.sorted.foreach {
@@ -1055,18 +1053,16 @@ b. Dim Driven
             val result = QueryGeneratorHelper.handleFilterRender(filter, publicFact, fact, publicFact.aliasToNameColumnMap, queryContext, OracleEngine, literalMapper, colRenderFn)
 
             if(fact.dimColMap.contains(name)) {
-              returnEscaped |= result.escaped
               whereFilters += result.filter
             } else {
-              returnEscaped |= result.escaped
               havingFilters += result.filter
             }
         }
       }
-      (whereFilters, havingFilters, returnEscaped)
+      (whereFilters, havingFilters)
     }
 
-    def whereClauseExp(whereClause: mutable.LinkedHashSet[String]): String = {
+    def whereClauseExp(whereClause: RenderedAndFilter): String = {
       s"""WHERE ${whereClause.toString} """
     }
 
@@ -1095,6 +1091,31 @@ b. Dim Driven
       }
     }
 
+    def addSubquery(isFactOnlyQuery: Boolean
+                   , queryContext: CombinedQueryContext
+                   , fact: Fact
+                   , filters: SortedSet[Filter]): mutable.LinkedHashSet[String] = {
+      //add subquery
+      val returnedWhereFilters: mutable.LinkedHashSet[String] = mutable.LinkedHashSet[String]()
+      if(isFactOnlyQuery) {
+        queryContext.dims.foreach {
+          subqueryBundle =>
+            val factFKCol = fact.publicDimToForeignKeyMap(subqueryBundle.publicDim.name)
+            val factFkColAlias = {
+              if (fact.columnsByNameMap.contains(factFKCol)) {
+                fact.columnsByNameMap.get(factFKCol).get.alias
+              } else {
+                None
+              }
+            }
+            val sql = generateSubqueryFilter(factFkColAlias.getOrElse(factFKCol), filters, subqueryBundle)
+            returnedWhereFilters += sql
+        }
+      }
+
+      returnedWhereFilters
+    }
+
     def generateWhereAndHavingClause(): Unit = {
       // inner fact where clauses
       val fact = queryContext.factBestCandidate.fact
@@ -1105,8 +1126,13 @@ b. Dim Driven
       val havingFilters = new mutable.LinkedHashSet[String]
       val hasPartitioningScheme = fact.annotations.contains(OracleQueryGenerator.ANY_PARTITIONING_SCHEME)
 
-      val forceFilters: Set[ForcedFilter] = getGranularForcedFilters(publicFact, fact) //TODO: This sits behind a feature flag.
-
+      val forcedFilters: Set[ForcedFilter] = getGranularForcedFilters(publicFact, fact) //TODO: This sits behind a feature flag.
+      val whereUsingForcedFilters: mutable.LinkedHashSet[String] = addSubquery(isFactOnlyQuery, queryContext, fact, filters)
+      val havingUsingForcedFilters: mutable.LinkedHashSet[String] = mutable.LinkedHashSet[String]()
+      val (appendWhere, appendHaving) =
+        generateUniqueWhereAndHavingFilters(filters, forcedFilters, queryContext, requestModel, publicFact, fact, whereUsingForcedFilters, havingUsingForcedFilters)
+      whereUsingForcedFilters ++= appendWhere
+      havingUsingForcedFilters ++= appendHaving
 
       //add subquery
       if(isFactOnlyQuery) {
@@ -1170,6 +1196,12 @@ b. Dim Driven
           RenderedAndFilter(whereFilters + dayFilter)
         }
       }
+
+      val renderedCombinedUsingForced = renderCombinedFilters(hasPartitioningScheme, whereUsingForcedFilters, dayFilter)
+      val whereClauseExpUsingForced = whereClauseExp(renderedCombinedUsingForced)
+      val havingClauseExpUsingForced = havingClauseExp(havingUsingForcedFilters)
+      queryBuilder.setV2WhereClause(whereClauseExpUsingForced)
+      if (havingClauseExpUsingForced != "") queryBuilder.setV2HavingClause(havingClauseExpUsingForced)
 
       val whereClauseExpression = s"""WHERE ${combinedQueriedFilters.toString} """
       queryBuilder.setWhereClause(whereClauseExpression)
