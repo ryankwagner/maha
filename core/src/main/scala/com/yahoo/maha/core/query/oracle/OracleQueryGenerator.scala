@@ -1049,7 +1049,7 @@ b. Dim Driven
         unique_filters.sorted.foreach {
           filter =>
             val name = publicFact.aliasToNameColumnMap(filter.field)
-            val colRenderFn = colRenderFn
+            val internalColRenderFn: (Column) => String = colRenderFn
             val result = QueryGeneratorHelper.handleFilterRender(filter, publicFact, fact, publicFact.aliasToNameColumnMap, queryContext, OracleEngine, literalMapper, colRenderFn)
 
             if(fact.dimColMap.contains(name)) {
@@ -1211,6 +1211,9 @@ b. Dim Driven
         val havingClauseExpression = s"""HAVING ${havingAndFilters.toString}"""
         queryBuilder.setHavingClause(havingClauseExpression)
       }
+
+      require(havingFilters == havingUsingForcedFilters, "Should be the same!")
+      require(combinedQueriedFilters.toString == renderedCombinedUsingForced.toString, "Should be the same!!")
 
     }
 
