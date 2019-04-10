@@ -5752,4 +5752,35 @@ class OracleQueryGeneratorTest extends BaseOracleQueryGeneratorTest {
     result should equal (expected)(after being whiteSpaceNormalised)
   }
 
+  test("Forced Filter in Fact Rollup should not be overridable.") {
+    val jsonString: String =
+      s"""
+         |{
+         |  "cube": "k_stats",
+         |  "selectFields": [
+         |    { "field": "Advertiser ID" },
+         |    { "field": "Device ID" }
+         |  ],
+         |  "filterExpressions": [
+         |    { "field": "Advertiser ID", "operator": "=", "value": "12345" },
+         |    { "field": "Day", "operator": "between", "from": "$fromDate", "to": "$toDate" },
+         |    { "field": "Source", "operator": "=", "value": "-1" }
+         |  ]
+         |}
+       """.stripMargin
+
+    val request: ReportingRequest = getReportingRequestSync(jsonString)
+    val registry = defaultRegistry
+    val requestModelTry = RequestModel.from(request, registry, revision = Option(1))
+    assert(requestModelTry.isSuccess, "You make me a sad panda.")
+
+    val requestModel = requestModelTry.get
+    val queryPipelineTry = generatePipeline(requestModel)
+    assert(queryPipelineTry.isSuccess, queryPipelineTry.errorMessage("Fail to get the query pipeline"))
+
+    val result = queryPipelineTry.toOption.get.queryChain.drivingQuery.asInstanceOf[OracleQuery].asString
+    println(s"Resulting query looks like this: $result")
+
+  }
+
 }

@@ -8,7 +8,7 @@ import com.yahoo.maha.core.fact.{Fact, FactBestCandidate, FactCol, PublicFact}
 import com.yahoo.maha.core.query.Version.{v0, v1, v2}
 import org.slf4j.LoggerFactory
 
-import scala.collection.mutable
+import scala.collection.{SortedSet, mutable}
 import scala.collection.mutable.ArrayBuffer
 
 /**
@@ -184,6 +184,100 @@ trait QueryGenerator[T <: EngineRequirement] {
 
 trait BaseQueryGenerator[T <: EngineRequirement] extends QueryGenerator[T] {
   private val logger = LoggerFactory.getLogger(classOf[BaseQueryGenerator[T]])
+
+  def generateUniqueWhereAndHavingFilters(regularFilters: SortedSet[Filter]
+                                          , forceFilters: Set[ForcedFilter]
+                                          , queryContext: CombinedQueryContext
+                                          , requestModel: RequestModel
+                                          , publicFact: PublicFact
+                                          , fact: Fact
+                                          , whereFilters: mutable.LinkedHashSet[String]
+                                          , havingFilters: mutable.LinkedHashSet[String]
+                                         , colRenderFn: (Column => String)
+                                         , literalMapper: LiteralMapper)
+  : (mutable.LinkedHashSet[String], mutable.LinkedHashSet[String]) = {
+    if (requestModel.isFactDriven || requestModel.dimensionsCandidates.isEmpty || requestModel.hasNonFKFactFilters || requestModel.hasFactSortBy || fact.forceFilters.nonEmpty) {
+      val unique_filters = removeDuplicateIfForced( regularFilters.toSeq, forceFilters.toSeq, queryContext )
+      unique_filters.sorted.foreach {
+        filter =>
+          val name = publicFact.aliasToNameColumnMap(filter.field)
+          val result = QueryGeneratorHelper.handleFilterRender(filter, publicFact, fact, publicFact.aliasToNameColumnMap, queryContext, OracleEngine, literalMapper, colRenderFn)
+
+          if(fact.dimColMap.contains(name)) {
+            whereFilters += result.filter
+          } else {
+            havingFilters += result.filter
+          }
+      }
+    }
+    (whereFilters, havingFilters)
+  }
+
+  def renderCombinedFilters(hasPartitioningScheme: Boolean
+                            , whereFilters: mutable.LinkedHashSet[String]
+                            , dayFilter: String
+                           , partitionColumnRenderer: PartitionColumnRenderer
+                           , queryContext: CombinedQueryContext
+                           , literalMapper: LiteralMapper): RenderedAndFilter = {
+    if (hasPartitioningScheme) {
+      val partitionFilters = new mutable.LinkedHashSet[String]
+      val partitionFilterOption = partitionColumnRenderer.renderFact(queryContext, literalMapper, OracleEngine)
+      if(partitionFilterOption.isDefined) {
+        partitionFilters += partitionFilterOption.get
+        RenderedAndFilter(partitionFilters ++ whereFilters)
+      } else {
+        RenderedAndFilter(whereFilters + dayFilter)
+      }
+    } else {
+      RenderedAndFilter(whereFilters + dayFilter)
+    }
+  }
+
+  def addSubquery(isFactOnlyQuery: Boolean
+                  , queryContext: CombinedQueryContext
+                  , fact: Fact
+                  , filters: SortedSet[Filter]
+                 , subqueryFilterGenerator : (String, SortedSet[Filter], DimensionBundle) => String): mutable.LinkedHashSet[String] = {
+    //add subquery
+    val returnedWhereFilters: mutable.LinkedHashSet[String] = mutable.LinkedHashSet[String]()
+    if(isFactOnlyQuery) {
+      queryContext.dims.foreach {
+        subqueryBundle =>
+          val factFKCol = fact.publicDimToForeignKeyMap(subqueryBundle.publicDim.name)
+          val factFkColAlias = {
+            if (fact.columnsByNameMap.contains(factFKCol)) {
+              fact.columnsByNameMap.get(factFKCol).get.alias
+            } else {
+              None
+            }
+          }
+          val sql = subqueryFilterGenerator(factFkColAlias.getOrElse(factFKCol), filters, subqueryBundle)
+          returnedWhereFilters += sql
+      }
+    }
+
+    returnedWhereFilters
+  }
+
+  /**
+    * Populate a set of ForcedFilters from the Fact & PublicFact, preferring
+    * rollups (high priority) over public Facts (low priority).
+    * These forced filters enforce a single-fieldname responsibility & do not check
+    * for rendered field duplicates (we don't clean up bad queries).
+    * @param publicFact - public fact for filters (low priority)
+    * @param fact - base rollup for filters (high priority)
+    * @return - A set of unique filters.
+    */
+  def getGranularForcedFilters(publicFact: PublicFact
+                               , fact: Fact) : Set[ForcedFilter] = {
+    val baseForcedFilters : Set[ForcedFilter] = fact.forceFilters.map(a=>a.filter)
+    publicFact.forcedFilters.foreach(
+      filter =>
+        if()
+    )
+
+    publicFact.forcedFilters ++ fact.forceFilters.map(a=>a.filter)
+  }
 
   def removeDuplicateIfForced(localFilters: Seq[Filter], forcedFilters: Seq[ForcedFilter], inputContext: FactualQueryContext): Array[Filter] = {
     val queryContext = inputContext

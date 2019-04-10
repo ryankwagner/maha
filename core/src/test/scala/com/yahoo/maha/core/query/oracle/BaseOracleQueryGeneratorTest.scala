@@ -177,7 +177,7 @@ trait BaseOracleQueryGeneratorTest
           , FactCol("avg_pos", DecType(3, "0.0", "0.1", "500"), OracleCustomRollup(SUM("{avg_pos}" * "{impressions}") /- "{impressions}"))
         )
         , costMultiplierMap = Map(AsyncRequest -> CostMultiplier(LongRangeLookup.full(2)))
-        , forceFilters = Set(ForceFilter(EqualityFilter("Source", "2", isForceFilter = true)))
+        , forceFilters = Set(ForceFilter(InFilter("Source", List("2"), isForceFilter = true)))
       )
     }
 
@@ -204,7 +204,7 @@ trait BaseOracleQueryGeneratorTest
         PubCol("campaign_id", "Campaign ID", InEquality),
         PubCol("advertiser_id", "Advertiser ID", InEquality),
         PubCol("country_woeid", "Country WOEID", InEquality),
-        PubCol("stats_source", "Source", Equality),
+        PubCol("stats_source", "Source", InEquality),
         PubCol("price_type", "Pricing Type", In),
         PubCol("landing_page_url", "Destination URL", Set.empty),
         PubCol("column_id", "Column ID", Equality),
@@ -220,7 +220,7 @@ trait BaseOracleQueryGeneratorTest
         PublicFactCol("Average CPC", "Average CPC", InBetweenEquality),
         PublicFactCol("CTR", "CTR", InBetweenEquality)
       ),
-      Set.empty,
+      Set(EqualityFilter("Source", "1", isForceFilter = true)),
       getMaxDaysWindow, getMaxDaysLookBack, revision = 1
     )
   }

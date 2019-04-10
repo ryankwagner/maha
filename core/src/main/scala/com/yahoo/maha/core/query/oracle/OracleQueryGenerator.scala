@@ -1019,11 +1019,6 @@ b. Dim Driven
       }
     }
 
-    def getGranularForcedFilters(publicFact: PublicFact
-                                , fact: Fact) : Set[ForcedFilter] = {
-      publicFact.forcedFilters ++ fact.forceFilters.map(a=>a.filter)
-    }
-
     def colRenderFn(x: Column): String = {
       x match {
         case FactCol(_, dt, cc, rollup, _, annotations, _) =>
@@ -1033,33 +1028,6 @@ b. Dim Driven
         case any =>
           throw new UnsupportedOperationException(s"Found non fact column : $any")
       }
-    }
-
-    def generateUniqueWhereAndHavingFilters(regularFilters: SortedSet[Filter]
-                                                  , forceFilters: Set[ForcedFilter]
-                                                  , queryContext: CombinedQueryContext
-                                                  , requestModel: RequestModel
-                                                  , publicFact: PublicFact
-                                                  , fact: Fact
-                                                  , whereFilters: mutable.LinkedHashSet[String]
-                                                  , havingFilters: mutable.LinkedHashSet[String])
-    : (mutable.LinkedHashSet[String], mutable.LinkedHashSet[String]) = {
-      if (requestModel.isFactDriven || requestModel.dimensionsCandidates.isEmpty || requestModel.hasNonFKFactFilters || requestModel.hasFactSortBy || fact.forceFilters.nonEmpty) {
-        val unique_filters = removeDuplicateIfForced( regularFilters.toSeq, forceFilters.toSeq, queryContext )
-        unique_filters.sorted.foreach {
-          filter =>
-            val name = publicFact.aliasToNameColumnMap(filter.field)
-            val internalColRenderFn: (Column) => String = colRenderFn
-            val result = QueryGeneratorHelper.handleFilterRender(filter, publicFact, fact, publicFact.aliasToNameColumnMap, queryContext, OracleEngine, literalMapper, colRenderFn)
-
-            if(fact.dimColMap.contains(name)) {
-              whereFilters += result.filter
-            } else {
-              havingFilters += result.filter
-            }
-        }
-      }
-      (whereFilters, havingFilters)
     }
 
     def whereClauseExp(whereClause: RenderedAndFilter): String = {
@@ -1074,48 +1042,6 @@ b. Dim Driven
       else ""
     }
 
-    def renderCombinedFilters(hasPartitioningScheme: Boolean
-                             , whereFilters: mutable.LinkedHashSet[String]
-                             , dayFilter: String): RenderedAndFilter = {
-      if (hasPartitioningScheme) {
-        val partitionFilters = new mutable.LinkedHashSet[String]
-        val partitionFilterOption = partitionColumnRenderer.renderFact(queryContext, literalMapper, OracleEngine)
-        if(partitionFilterOption.isDefined) {
-          partitionFilters += partitionFilterOption.get
-          RenderedAndFilter(partitionFilters ++ whereFilters)
-        } else {
-          RenderedAndFilter(whereFilters + dayFilter)
-        }
-      } else {
-        RenderedAndFilter(whereFilters + dayFilter)
-      }
-    }
-
-    def addSubquery(isFactOnlyQuery: Boolean
-                   , queryContext: CombinedQueryContext
-                   , fact: Fact
-                   , filters: SortedSet[Filter]): mutable.LinkedHashSet[String] = {
-      //add subquery
-      val returnedWhereFilters: mutable.LinkedHashSet[String] = mutable.LinkedHashSet[String]()
-      if(isFactOnlyQuery) {
-        queryContext.dims.foreach {
-          subqueryBundle =>
-            val factFKCol = fact.publicDimToForeignKeyMap(subqueryBundle.publicDim.name)
-            val factFkColAlias = {
-              if (fact.columnsByNameMap.contains(factFKCol)) {
-                fact.columnsByNameMap.get(factFKCol).get.alias
-              } else {
-                None
-              }
-            }
-            val sql = generateSubqueryFilter(factFkColAlias.getOrElse(factFKCol), filters, subqueryBundle)
-            returnedWhereFilters += sql
-        }
-      }
-
-      returnedWhereFilters
-    }
-
     def generateWhereAndHavingClause(): Unit = {
       // inner fact where clauses
       val fact = queryContext.factBestCandidate.fact
@@ -1127,10 +1053,10 @@ b. Dim Driven
       val hasPartitioningScheme = fact.annotations.contains(OracleQueryGenerator.ANY_PARTITIONING_SCHEME)
 
       val forcedFilters: Set[ForcedFilter] = getGranularForcedFilters(publicFact, fact) //TODO: This sits behind a feature flag.
-      val whereUsingForcedFilters: mutable.LinkedHashSet[String] = addSubquery(isFactOnlyQuery, queryContext, fact, filters)
+      val whereUsingForcedFilters: mutable.LinkedHashSet[String] = addSubquery(isFactOnlyQuery, queryContext, fact, filters, generateSubqueryFilter)
       val havingUsingForcedFilters: mutable.LinkedHashSet[String] = mutable.LinkedHashSet[String]()
       val (appendWhere, appendHaving) =
-        generateUniqueWhereAndHavingFilters(filters, forcedFilters, queryContext, requestModel, publicFact, fact, whereUsingForcedFilters, havingUsingForcedFilters)
+        generateUniqueWhereAndHavingFilters(filters, forcedFilters, queryContext, requestModel, publicFact, fact, whereUsingForcedFilters, havingUsingForcedFilters, colRenderFn, literalMapper)
       whereUsingForcedFilters ++= appendWhere
       havingUsingForcedFilters ++= appendHaving
 
@@ -1197,7 +1123,7 @@ b. Dim Driven
         }
       }
 
-      val renderedCombinedUsingForced = renderCombinedFilters(hasPartitioningScheme, whereUsingForcedFilters, dayFilter)
+      val renderedCombinedUsingForced = renderCombinedFilters(hasPartitioningScheme, whereUsingForcedFilters, dayFilter, partitionColumnRenderer, queryContext, literalMapper)
       val whereClauseExpUsingForced = whereClauseExp(renderedCombinedUsingForced)
       val havingClauseExpUsingForced = havingClauseExp(havingUsingForcedFilters)
       queryBuilder.setV2WhereClause(whereClauseExpUsingForced)
@@ -1353,6 +1279,33 @@ ${queryBuilder.getJoinExpressions}
           requestModel.isFactDriven ||
           (includePaginationOnDimensions && !queryBuilder.getHasDimensionPagination))) {
       //if (requestModel.isSyncRequest && (requestModel.isFactDriven || requestModel.hasFactSortBy)) {
+        addPaginationWrapper(queryString, queryContext.requestModel.maxRows, queryContext.requestModel.startIndex, true)
+      } else {
+        queryString
+      }
+    }
+
+    val anotherTypeOfQueryString: String = {
+      // fill out query string
+      val queryString =
+        s"""SELECT *
+FROM (SELECT ${queryBuilder.getOuterColumns}
+      FROM (SELECT $optionalHint
+                   ${queryBuilder.getFactViewColumns}
+            FROM ${getFactAlias(queryContext.factBestCandidate.fact.name, queryContext.dims.map(_.dim).toSet)}
+            ${queryBuilder.getV2WhereClause}
+            ${queryBuilder.getGroupByClause}
+            ${queryBuilder.getV2HavingClause}
+           ) ${queryBuilderContext.getAliasForTable(queryContext.factBestCandidate.fact.name)}
+${queryBuilder.getJoinExpressions}
+) ${queryBuilder.getOuterWhereClause}
+   $orderByClause"""
+
+      if (requestModel.isSyncRequest &&
+        (requestModel.includeRowCount ||
+          requestModel.isFactDriven ||
+          (includePaginationOnDimensions && !queryBuilder.getHasDimensionPagination))) {
+        //if (requestModel.isSyncRequest && (requestModel.isFactDriven || requestModel.hasFactSortBy)) {
         addPaginationWrapper(queryString, queryContext.requestModel.maxRows, queryContext.requestModel.startIndex, true)
       } else {
         queryString
